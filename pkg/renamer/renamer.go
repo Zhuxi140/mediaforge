@@ -48,7 +48,7 @@ type RenameRule struct {
 type RenamePreview struct {
 
 	// 原始路径
-	OriginalPath string `json:"original_path,omitempty"`
+	OriginalPath string `json:"originalPath,omitempty"`
 	// 原文件名
 	OriginalName string `json:"originalName"`
 	// 新文件名

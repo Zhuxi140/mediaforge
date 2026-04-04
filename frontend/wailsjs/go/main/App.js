@@ -6,6 +6,18 @@ export function ApplyRename(arg1) {
   return window['go']['main']['App']['ApplyRename'](arg1);
 }
 
+export function CancelMediaTask(arg1) {
+  return window['go']['main']['App']['CancelMediaTask'](arg1);
+}
+
+export function CheckInputFile(arg1) {
+  return window['go']['main']['App']['CheckInputFile'](arg1);
+}
+
+export function ExtractSubtitle(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ExtractSubtitle'](arg1, arg2, arg3, arg4);
+}
+
 export function Greet(arg1) {
   return window['go']['main']['App']['Greet'](arg1);
 }
@@ -22,6 +34,14 @@ export function Run(arg1) {
   return window['go']['main']['App']['Run'](arg1);
 }
 
+export function ScanSubtitles(arg1) {
+  return window['go']['main']['App']['ScanSubtitles'](arg1);
+}
+
 export function SelectFiles() {
   return window['go']['main']['App']['SelectFiles']();
+}
+
+export function SubmitMediaTask(arg1) {
+  return window['go']['main']['App']['SubmitMediaTask'](arg1);
 }

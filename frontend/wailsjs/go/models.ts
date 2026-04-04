@@ -1,3 +1,52 @@
+export namespace media {
+	
+	export class FFmpegTask {
+	    ID: string;
+	    InputPath: string;
+	    OutputPath: string;
+	    Format: string;
+	    Quality: string;
+	    VideoCRF: string;
+	    AudioVBR: string;
+	    HwAccel: string;
+	    ForceDropSubtitle: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new FFmpegTask(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ID = source["ID"];
+	        this.InputPath = source["InputPath"];
+	        this.OutputPath = source["OutputPath"];
+	        this.Format = source["Format"];
+	        this.Quality = source["Quality"];
+	        this.VideoCRF = source["VideoCRF"];
+	        this.AudioVBR = source["AudioVBR"];
+	        this.HwAccel = source["HwAccel"];
+	        this.ForceDropSubtitle = source["ForceDropSubtitle"];
+	    }
+	}
+	export class SubtitleStream {
+	    Index: string;
+	    Language: string;
+	    Codec: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SubtitleStream(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Index = source["Index"];
+	        this.Language = source["Language"];
+	        this.Codec = source["Codec"];
+	    }
+	}
+
+}
+
 export namespace renamer {
 	
 	export class ExtractRule {
@@ -15,7 +64,7 @@ export namespace renamer {
 	    }
 	}
 	export class RenamePreview {
-	    original_path?: string;
+	    originalPath?: string;
 	    originalName: string;
 	    newName: string;
 	    newPath: string;
@@ -28,7 +77,7 @@ export namespace renamer {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.original_path = source["original_path"];
+	        this.originalPath = source["originalPath"];
 	        this.originalName = source["originalName"];
 	        this.newName = source["newName"];
 	        this.newPath = source["newPath"];
