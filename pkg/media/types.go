@@ -50,6 +50,17 @@ var ValidAudioFormats = map[string]struct{}{
 	"wma": {},
 }
 
+var ValidSubtitleFormats = map[string]struct{}{
+	"srt": {}, "ass": {},
+	"vtt": {},
+	"ssa": {}, "idx": {},
+	"xml": {}, "ttml": {},
+	"dfxp": {}, "sami": {},
+	"smi": {}, "mpl": {},
+	"txt": {}, "usf": {},
+	"jss": {}, "rt": {},
+}
+
 // 判断文件是否为常见视频文件
 func IsVideoFile(ext string) bool {
 
@@ -63,5 +74,12 @@ func IsAudioFile(ext string) bool {
 
 	lower := strings.ToLower(strings.TrimSpace(ext))
 	_, exists := ValidAudioFormats[lower]
+	return exists
+}
+
+// 判断文件是否为常见字幕文件
+func IsSubtitleFile(ext string) bool {
+	lower := strings.ToLower(strings.TrimSpace(ext))
+	_, exists := ValidSubtitleFormats[lower]
 	return exists
 }

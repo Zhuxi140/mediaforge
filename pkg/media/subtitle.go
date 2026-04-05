@@ -91,12 +91,17 @@ func GetSubtitleStreams(inputPath string) ([]SubtitleStream, error) {
 }
 
 // 异步提取指定的字幕流
-func ProcessSubtitleAsync(crx context.Context, id, inputPath, streamIndex, outDir string) error {
+func ProcessSubtitleAsync(crx context.Context, id, inputPath, streamIndex, outDir string, targetFormat string) error {
 	base := filepath.Base(inputPath)
 	ext := filepath.Ext(base)
 	nameWioutExt := strings.TrimSuffix(base, ext)
 
-	outName := fmt.Sprintf("%s_sub_stream%s.srt", nameWioutExt, streamIndex)
+	targetFormat = strings.TrimPrefix(targetFormat, ".")
+	var codec string
+
+	codec, targetFormat = selectCodec(targetFormat)
+
+	outName := fmt.Sprintf("%s_sub_stream%s.%s", nameWioutExt, streamIndex, targetFormat)
 
 	var finalOutPutPath string
 
@@ -113,20 +118,22 @@ func ProcessSubtitleAsync(crx context.Context, id, inputPath, streamIndex, outDi
 		defer activeTasks.Delete(id)
 
 		args := []string{
-			"-y", "-i", inputPath,
+			"-y", "-nostdin", "-i", inputPath,
 			"-map", "0:" + streamIndex,
-			"-c:s", "subrip",
+			"-c:s", codec,
 			finalOutPutPath,
 		}
 
 		fmt.Printf("\n[字幕提取] ffmpeg %s\n", strings.Join(args, " "))
 		cmd := exec.CommandContext(ctx, localFFmpegPath, args...)
 
-		if err := cmd.Run(); err != nil {
+		out, err := cmd.CombinedOutput()
+
+		if err != nil {
 			if ctx.Err() == context.Canceled {
 				runtime.EventsEmit(ctx, "ffmpeg-error-"+id, "任务已取消")
 			} else {
-				runtime.EventsEmit(ctx, "ffmpeg-error-"+id, fmt.Sprintf("提取失败：%v", err))
+				runtime.EventsEmit(ctx, "ffmpeg-error-"+id, fmt.Sprintf("提取失败：%v \n 日志信息: %s", err, string(out)))
 			}
 			return
 		}
@@ -134,4 +141,74 @@ func ProcessSubtitleAsync(crx context.Context, id, inputPath, streamIndex, outDi
 		runtime.EventsEmit(ctx, "ffmpeg-done-"+id, "success")
 	}()
 	return nil
+}
+
+func ConvertSubtitle(inputPath, outputDir, targetFormat, outPutName string) error {
+	if localFFmpegPath == "" {
+		return fmt.Errorf("引擎未初始化")
+	}
+
+	ext := filepath.Ext(inputPath)
+
+	if !IsSubtitleFile(strings.TrimPrefix(ext, ".")) {
+		runtime.LogError(context.Background(), "该文件不是字幕文件或暂不支持该类型字幕")
+	}
+
+	base := filepath.Base(inputPath)
+	var outName string
+	if outPutName != "" {
+		outName = outPutName
+	} else {
+		outName = strings.TrimSuffix(base, ext)
+	}
+	targetFormat = strings.ToLower(strings.TrimPrefix(targetFormat, "."))
+	outName = fmt.Sprintf("%s.%s", outName, targetFormat)
+
+	var finalOutPutPath string
+
+	if outputDir == "" {
+		finalOutPutPath = filepath.Join(filepath.Dir(inputPath), outName)
+	} else {
+		finalOutPutPath = filepath.Join(outputDir, outName)
+	}
+
+	var codec string
+
+	codec, targetFormat = selectCodec(targetFormat)
+
+	args := []string{
+		"-y", "-nostdin", "-i", inputPath,
+		"-c:s", codec,
+		finalOutPutPath,
+	}
+
+	fmt.Printf("\n[字幕转换] ffmpeg %s\n", strings.Join(args, " "))
+	cmd := exec.Command(localFFmpegPath, args...)
+
+	out, err := cmd.CombinedOutput()
+
+	if err != nil {
+		return fmt.Errorf("命令执行失败：%v \n 执行命令为: %s \n ffmpeg输出信息: %s ", err, cmd.Args, string(out))
+	}
+	return nil
+}
+
+func selectCodec(targetFormat string) (string, string) {
+	var codec string
+
+	switch targetFormat {
+	case "ass", "ssa":
+		codec = "ass"
+	case "vtt":
+		codec = "webvtt"
+	case "xml", "ttml", "dfxp":
+		codec = "ttml"
+	case "sami", "smi":
+		codec = "sami"
+	default:
+		codec = "subrip"
+		targetFormat = "srt"
+
+	}
+	return codec, targetFormat
 }

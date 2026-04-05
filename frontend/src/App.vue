@@ -1,10 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, computed } from 'vue';
-import {
-  SelectFiles, PreviewRename, ApplyRename, QuickRename,
-  SubmitMediaTask, CancelMediaTask, ScanSubtitles, ExtractSubtitle,
-  CheckInputFile // ✨ 引入后端的格式雷达
-} from '../wailsjs/go/main/App';
+import {SelectFiles, PreviewRename, ApplyRename, QuickRename} from '../wailsjs/go/controller/RenamerApp';
+import {SubmitMediaTask, CancelMediaTask, ScanSubtitles, ExtractSubtitle, CheckInputFile, ConvertSubtitle} from '../wailsjs/go/controller/MediaApp';
 import { OnFileDrop, OnFileDropOff, EventsOn, EventsOff } from '../wailsjs/runtime/runtime';
 
 // ==========================================
@@ -27,11 +24,10 @@ const showModal = (title: string, message: string, type: 'success' | 'warning' |
 const handleModalConfirm = () => { modalState.value.visible = false; if (resolveModal) resolveModal(true); };
 const handleModalCancel = () => { modalState.value.visible = false; if (resolveModal) resolveModal(false); };
 
-
 // ==========================================
 // 🌌 App Shell 全局状态
 // ==========================================
-const activeApp = ref<'renamer' | 'ffmpeg' | 'subtitle'>('subtitle'); // 默认打开字幕便于测试
+const activeApp = ref<'renamer' | 'ffmpeg' | 'subtitle'>('subtitle');
 
 // ==========================================
 // 🗂️ 模块一：批量重命名 (Renamer)
@@ -46,7 +42,27 @@ watch(selectedChars, (newVal) => { rule.value.CleanChars = newVal.join(''); }, {
 watch(currentMode, (newMode) => { rule.value.Mode = newMode; });
 const addSmartRule = () => { rule.value.SmartRules.push({ Name: '', Pattern: '' }); };
 const removeSmartRule = (index: number) => { rule.value.SmartRules.splice(index, 1); };
-const handleSelectFiles = async () => { const files = await SelectFiles(); if (files && files.length > 0) { if (activeApp.value === 'renamer') { const newFiles = files.filter(f => !filePaths.value.includes(f)); filePaths.value = [...filePaths.value, ...newFiles]; } else if (activeApp.value === 'ffmpeg') { addMediaFiles(files); } else if (activeApp.value === 'subtitle') { addSubtitleFiles(files); } } };
+
+const handleSelectFiles = async () => {
+  const files = await SelectFiles();
+  if (files && files.length > 0) {
+    if (activeApp.value === 'renamer') {
+      const newFiles = files.filter(f => !filePaths.value.includes(f));
+      filePaths.value = [...filePaths.value, ...newFiles];
+    }
+    else if (activeApp.value === 'ffmpeg') {
+      addMediaFiles(files);
+    }
+    else if (activeApp.value === 'subtitle') {
+      if (currentSubMode.value === 'Extract') {
+        addSubtitleFiles(files);
+      } else {
+        addConvertSubtitleFiles(files);
+      }
+    }
+  }
+};
+
 const clearList = () => { filePaths.value = []; previews.value = []; };
 const removeFile = (index: number) => { filePaths.value.splice(index, 1); };
 const refreshList = async () => { if (filePaths.value.length > 0) filePaths.value = [...filePaths.value]; };
@@ -84,7 +100,6 @@ const saveEdit = async (index: number, oldPath: string) => {
   }
 };
 
-
 // ==========================================
 // 🎬 模块二：影音工厂 (FFmpeg)
 // ==========================================
@@ -104,7 +119,6 @@ watch(() => mediaSettings.value.mediaType, (newType) => {
 
 const generateId = () => Math.random().toString(36).substring(2, 9) + Date.now().toString(36);
 
-// ✨ 完美安检版：影音工厂导入文件
 const addMediaFiles = async (paths: string[]) => {
   for (const p of paths) {
     if (mediaTasks.value.some(task => task.path === p)) continue;
@@ -123,13 +137,11 @@ const addMediaFiles = async (paths: string[]) => {
     const proxyTask = mediaTasks.value[mediaTasks.value.length - 1];
 
     try {
-      // 🚀 呼叫后端雷达瞬间鉴定格式
       const checkResult = await CheckInputFile(p);
-
       if (checkResult !== "success") {
         proxyTask.status = 'error';
         proxyTask.errorMessage = checkResult;
-        proxyTask.progressTime = `❌ ${checkResult}`; // 精准回显被拦截的格式
+        proxyTask.progressTime = `❌ ${checkResult}`;
       }
     } catch (err) {
       console.error("鉴定格式通信失败:", err);
@@ -194,23 +206,34 @@ const clearMediaTasks = () => { mediaTasks.value.forEach(t => clearMediaListener
 const clearMediaListeners = (id: string) => { EventsOff('ffmpeg-progress-' + id); EventsOff('ffmpeg-done-' + id); EventsOff('ffmpeg-error-' + id); };
 watch(() => mediaSettings.value.globalTargetFormat, (newFormat) => { mediaTasks.value.forEach(t => { if (t.status === 'pending') t.targetFormat = newFormat; }); });
 
-// ✨ 影音工厂：一键清除错误任务
 const hasErrorMediaTasks = computed(() => mediaTasks.value.some(t => t.status === 'error'));
 const clearErrorMediaTasks = () => {
   mediaTasks.value.filter(t => t.status === 'error').forEach(t => clearMediaListeners(t.id));
   mediaTasks.value = mediaTasks.value.filter(t => t.status !== 'error');
 };
 
+// ==========================================
+// 📝 模块三：智能字幕处理中心 (提取 + 互转)
+// ==========================================
+const currentSubMode = ref<'Extract' | 'Convert'>('Extract');
 
-// ==========================================
-// 📝 模块三：字幕剥离工厂
-// ==========================================
+// --- 提取功能状态 ---
 interface SubtitleStreamInfo { Index: string; Language: string; Codec: string; }
 interface SubtitleTask { id: string; path: string; name: string; status: 'scanning' | 'ready' | 'processing' | 'success' | 'error' | 'no_sub'; streams: SubtitleStreamInfo[]; selectedStreams: string[]; progressText: string; }
 const subTasks = ref<SubtitleTask[]>([]);
-const subSettings = ref({ outputDir: '' });
+const subSettings = ref({ outputDir: '',format: 'srt' });
 
-// ✨ 显示真实拦截原因的扫描函数
+// --- 互转功能状态 ---
+interface SubConvertTask { id: string; path: string; name: string; outputName: string; targetFormat: string; status: 'pending' | 'processing' | 'success' | 'error'; progressText: string; }
+const subConvertTasks = ref<SubConvertTask[]>([]);
+const subConvertSettings = ref({ outputDir: '', globalTargetFormat: 'ass' });
+const supportedSubFormats = ['srt', 'ass', 'vtt', 'ssa', 'ttml', 'smi', 'sub'];
+
+watch(() => subConvertSettings.value.globalTargetFormat, (newFmt) => {
+  subConvertTasks.value.forEach(t => { if (t.status === 'pending') t.targetFormat = newFmt; });
+});
+
+// --- 提取核心逻辑 ---
 const addSubtitleFiles = async (paths: string[]) => {
   for (const p of paths) {
     if (subTasks.value.some(t => t.path === p)) continue;
@@ -235,17 +258,30 @@ const addSubtitleFiles = async (paths: string[]) => {
       }
     } catch (err) {
       proxyTask.status = 'error';
-      // 直接显示 Go 抛过来的错误文本！
       proxyTask.progressText = `❌ ${err}`;
     }
   }
 };
 
-// ✨ 绝杀死锁版：并发提取 + 状态回传机制
-const extractSubtitles = (task: SubtitleTask) => {
+const extractSubtitles = async (task: SubtitleTask) => {
   if (task.selectedStreams.length === 0) {
     showModal('提示', "请至少选择一条字幕流进行提取！", 'warning');
     return;
+  }
+
+  const hasUnsupported = task.selectedStreams.some(idx => {
+    const stream = task.streams.find(s => s.Index === idx);
+    return stream && (stream.Codec.toLowerCase() === 'microdvd' || stream.Codec.toLowerCase() === 'dvd_subtitle');
+  });
+
+  if (hasUnsupported) {
+    const agree = await showModal(
+        '⚠️ 格式硬核预警',
+        '您勾选了 MicroDVD / VobSub (sub) 格式的字幕。\n\n该类型通常没有绝对时间戳或包含纯图形数据。该类型需使用更专业工具（如专门的字幕编辑软件或 OCR 识别）来进行转换，不建议使用本软件直接提取。\n\n强行提取极大可能失败或导致时间轴完全错乱。确定要继续吗？',
+        'warning',
+        true
+    );
+    if (!agree) return;
   }
 
   task.status = 'processing';
@@ -255,7 +291,6 @@ const extractSubtitles = (task: SubtitleTask) => {
   let finishedCount = 0;
   let successCount = 0;
 
-  // 定义统一结账函数
   const checkDone = () => {
     if (finishedCount === expectedCount) {
       task.status = 'success';
@@ -263,7 +298,6 @@ const extractSubtitles = (task: SubtitleTask) => {
     }
   };
 
-  // 抛弃 await 阻塞，全量派发任务让后端并行处理
   for (const streamIdx of task.selectedStreams) {
     const subId = task.id + "_" + streamIdx;
 
@@ -282,7 +316,7 @@ const extractSubtitles = (task: SubtitleTask) => {
       checkDone();
     });
 
-    ExtractSubtitle(subId, task.path, streamIdx, subSettings.value.outputDir).catch(err => {
+    ExtractSubtitle(subId, task.path, streamIdx, subSettings.value.outputDir,subSettings.value.format).catch(err => {
       console.error("IPC 提取调用失败:", err);
       finishedCount++;
       checkDone();
@@ -294,23 +328,73 @@ const extractAllTasks = () => { subTasks.value.forEach(task => { if (task.status
 const removeSubTask = (index: number) => { subTasks.value.splice(index, 1); };
 const clearSubTasks = () => { subTasks.value = []; };
 
-// ✨ 字幕工厂：一键清除错误或无字幕任务
 const hasErrorSubTasks = computed(() => subTasks.value.some(t => t.status === 'error' || t.status === 'no_sub'));
 const clearErrorSubTasks = () => {
   subTasks.value = subTasks.value.filter(t => t.status !== 'error' && t.status !== 'no_sub');
 };
 
-// ==========================================
-// 🌌 全局拖拽接管
-// ==========================================
-onMounted(() => {
-  OnFileDrop((x: number, y: number, paths: string[]) => {
-    if (activeApp.value === 'renamer') { const newFiles = paths.filter(p => !filePaths.value.includes(p)); filePaths.value = [...filePaths.value, ...newFiles]; }
-    else if (activeApp.value === 'ffmpeg') { addMediaFiles(paths); }
-    else if (activeApp.value === 'subtitle') { addSubtitleFiles(paths); }
-  }, true);
-});
-onUnmounted(() => { OnFileDropOff(); });
+// --- 互转核心逻辑 ---
+const addConvertSubtitleFiles = (paths: string[]) => {
+  const subExts = ['.srt', '.ass', '.ssa', '.vtt', '.txt', '.ttml', '.smi', '.sub'];
+  for (const p of paths) {
+    if (subConvertTasks.value.some(t => t.path === p)) continue;
+
+    const ext = p.substring(p.lastIndexOf('.')).toLowerCase();
+    if (!subExts.includes(ext)) continue;
+
+    subConvertTasks.value.push({
+      id: generateId(),
+      path: p,
+      name: p.split('\\').pop() || p.split('/').pop() || p,
+      outputName: '',
+      targetFormat: subConvertSettings.value.globalTargetFormat,
+      status: 'pending',
+      progressText: '等待转换'
+    });
+  }
+};
+
+const runSubConvert = async (task: SubConvertTask) => {
+  const outDir = subConvertSettings.value.outputDir.trim();
+  const outName = task.outputName.trim();
+
+  if (!outDir && !outName) {
+    task.status = 'error';
+    task.progressText = '缺少输出信息';
+    showModal('缺失', `文件 [${task.name}]\n\n输出目录 和 新文件名，至少必须填写一个！\n(出于安全考虑)`, 'warning');
+    return;
+  }
+
+  if (outDir && !outName) {
+    const inputDir = task.path.substring(0, Math.max(task.path.lastIndexOf('\\'), task.path.lastIndexOf('/')));
+    const normalizedOutDir = outDir.replace(/\\/g, '/').toLowerCase().replace(/\/$/, '');
+    const normalizedInputDir = inputDir.replace(/\\/g, '/').toLowerCase().replace(/\/$/, '');
+
+    if (normalizedOutDir === normalizedInputDir) {
+      task.status = 'error';
+      task.progressText = '路径冲突';
+      showModal('路径冲突', `文件 [${task.name}]\n\n您指定的输出目录与原文件完全相同！\n这将导致 FFmpeg 写入覆盖报错。\n\n请修改输出目录，或者在表格中指定一个【新文件名】。`, 'warning');
+      return;
+    }
+  }
+
+  task.status = 'processing';
+  task.progressText = '转换中...';
+  try {
+    await ConvertSubtitle(task.path, outDir, outName, task.targetFormat);
+    task.status = 'success';
+    task.progressText = '转换成功';
+  } catch (err) {
+    task.status = 'error';
+    task.progressText = `失败`;
+    showModal('转换失败', String(err), 'error');
+  }
+};
+
+const runAllSubConvert = () => { subConvertTasks.value.forEach(t => { if (t.status === 'pending' || t.status === 'error') runSubConvert(t); }); };
+const clearSubConvertTasks = () => { subConvertTasks.value = []; };
+const removeSubConvertTask = (index: number) => { subConvertTasks.value.splice(index, 1); };
+
 </script>
 
 <template>
@@ -321,43 +405,52 @@ onUnmounted(() => { OnFileDropOff(); });
       <div class="nav-menu">
         <button class="nav-item" :class="{ active: activeApp === 'renamer' }" @click="activeApp = 'renamer'"><span class="nav-icon"><svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13.5V4a2 2 0 0 1 2-2h8.5L20 7.5V20a2 2 0 0 1-2 2h-5.5"/><polyline points="14 2 14 8 20 8"/><path d="M10.42 12.61a2.1 2.1 0 1 1 2.97 2.97L7.95 21 4 22l.99-3.95 5.43-5.44Z"/></svg></span><span class="nav-text">重命名</span></button>
         <button class="nav-item" :class="{ active: activeApp === 'ffmpeg' }" @click="activeApp = 'ffmpeg'"><span class="nav-icon"><svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.4-2.2 1.5-2.5l13.5-4c1.1-.3 2.2.4 2.5 1.5z"/><path d="m6.2 5.3 3.1 3.9"/><path d="m12.4 3.4 3.1 4"/><path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg></span><span class="nav-text">影音工厂</span></button>
-        <button class="nav-item" :class="{ active: activeApp === 'subtitle' }" @click="activeApp = 'subtitle'"><span class="nav-icon"><svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="9" y1="9" x2="15" y2="9"/><line x1="9" y1="13" x2="15" y2="13"/></svg></span><span class="nav-text">字幕剥离</span></button>
+        <button class="nav-item" :class="{ active: activeApp === 'subtitle' }" @click="activeApp = 'subtitle'"><span class="nav-icon"><svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="9" y1="9" x2="15" y2="9"/><line x1="9" y1="13" x2="15" y2="13"/></svg></span><span class="nav-text">字幕处理</span></button>
       </div>
     </nav>
 
     <main v-show="activeApp === 'renamer'" class="app-layout">
       <header class="app-header">
         <div class="header-title"><h1>批量重命名引擎</h1></div>
-        <div class="segmented-control">
-          <button :class="{ active: currentMode === 'BasicMode' }" @click="currentMode = 'BasicMode'">基础替换</button>
-          <button :class="{ active: currentMode === 'SmartMode' }" @click="currentMode = 'SmartMode'">智能解析</button>
-        </div>
       </header>
       <div class="workspace">
         <aside class="control-sidebar">
-          <div v-if="currentMode === 'BasicMode'" class="panel-content">
-            <h2 class="section-title">基础规则设定</h2>
-            <div class="input-stack"><div class="input-field"><label>文件前缀</label><input v-model="rule.Prefix" placeholder="如: 2026_" /></div><div class="input-field"><label>文件后缀</label><input v-model="rule.Suffix" placeholder="如: _v1" /></div></div>
-            <div class="divider"></div><h2 class="section-title">字符替换</h2>
-            <div class="input-stack"><input v-model="rule.ReplaceOld" placeholder="查找特定字符..." /><div class="icon-arrow">↓</div><input v-model="rule.ReplaceNew" placeholder="替换为新字符..." /></div>
-          </div>
-          <div v-if="currentMode === 'SmartMode'" class="panel-content">
-            <h2 class="section-title">智能提取变量</h2><p class="helper-text">利用正则无视文件名的混乱顺序提取关键信息。</p>
-            <div class="rules-list"><div v-for="(r, index) in rule.SmartRules" :key="index" class="rule-card"><div class="rule-header"><span class="rule-num">{{ index + 1 }}</span><button class="btn-icon text-danger" @click="removeSmartRule(index)">✕</button></div><div class="rule-inputs"><input v-model="r.Name" placeholder="变量名" class="code-input var-name" /><input v-model="r.Pattern" placeholder="正则表达式" class="code-input pattern" /></div></div></div>
-            <button class="btn-dashed w-full" @click="addSmartRule">＋ 新增提取变量</button>
-            <div class="divider"></div><h2 class="section-title">重组装设定</h2>
-            <div class="input-field"><label>目标格式模板</label><input v-model="rule.SmartTemplate" class="code-input highlight" placeholder="{class}-{name}_{id}" /></div>
-            <div class="input-field mt-3"><label>预处理: 过滤干扰符</label><div class="chips-group"><label v-for="opt in cleanCharOptions" :key="opt.value" class="chip" :class="{ 'active': selectedChars.includes(opt.value) }"><input type="checkbox" :value="opt.value" v-model="selectedChars" style="display: none;" />{{ opt.label }}</label></div></div>
+          <div class="panel-content">
+
+            <div class="input-field" style="margin-bottom: 20px;">
+              <label>重命名模式</label>
+              <div class="segmented-control mini-segmented">
+                <button :class="{ active: currentMode === 'BasicMode' }" @click="currentMode = 'BasicMode'" style="flex: 1;">基础替换</button>
+                <button :class="{ active: currentMode === 'SmartMode' }" @click="currentMode = 'SmartMode'" style="flex: 1;">智能解析</button>
+              </div>
+            </div>
+
+            <template v-if="currentMode === 'BasicMode'">
+              <h2 class="section-title">基础规则设定</h2>
+              <div class="input-stack"><div class="input-field"><label>文件前缀</label><input v-model="rule.Prefix" placeholder="如: 2026_" /></div><div class="input-field"><label>文件后缀</label><input v-model="rule.Suffix" placeholder="如: _v1" /></div></div>
+              <div class="divider"></div><h2 class="section-title">字符替换</h2>
+              <div class="input-stack"><input v-model="rule.ReplaceOld" placeholder="查找特定字符..." /><div class="icon-arrow">↓</div><input v-model="rule.ReplaceNew" placeholder="替换为新字符..." /></div>
+            </template>
+
+            <template v-if="currentMode === 'SmartMode'">
+              <h2 class="section-title">智能提取变量</h2><p class="helper-text">利用正则无视文件名的混乱顺序提取关键信息。</p>
+              <div class="rules-list"><div v-for="(r, index) in rule.SmartRules" :key="index" class="rule-card"><div class="rule-header"><span class="rule-num">{{ index + 1 }}</span><button class="btn-icon text-danger" @click="removeSmartRule(index)">✕</button></div><div class="rule-inputs"><input v-model="r.Name" placeholder="变量名" class="code-input var-name" /><input v-model="r.Pattern" placeholder="正则表达式" class="code-input pattern" /></div></div></div>
+              <button class="btn-dashed w-full" @click="addSmartRule">＋ 新增提取变量</button>
+              <div class="divider"></div><h2 class="section-title">重组装设定</h2>
+              <div class="input-field"><label>目标格式模板</label><input v-model="rule.SmartTemplate" class="code-input highlight" placeholder="{class}-{name}_{id}" /></div>
+              <div class="input-field mt-3"><label>预处理: 过滤干扰符</label><div class="chips-group"><label v-for="opt in cleanCharOptions" :key="opt.value" class="chip" :class="{ 'active': selectedChars.includes(opt.value) }"><input type="checkbox" :value="opt.value" v-model="selectedChars" style="display: none;" />{{ opt.label }}</label></div></div>
+            </template>
+
           </div>
           <div class="global-actions">
-            <button class="btn btn-primary w-full shadow-sm" :disabled="!canExecute" @click="handleExecute">🚀 执行重命名 <span v-if="validPreviews.length" class="badge">{{ validPreviews.length }}</span></button>
+            <button class="btn btn-primary w-full shadow-sm" :disabled="!canExecute" @click="handleExecute">执行重命名 <span v-if="validPreviews.length" class="badge">{{ validPreviews.length }}</span></button>
             <div class="action-row mt-2">
               <button class="btn btn-secondary w-full" @click="handleSelectFiles">选择文件</button>
             </div>
           </div>
         </aside>
         <main class="data-view" style="--wails-drop-target: drop">
-          <div v-if="previews.length === 0" class="empty-state"><div class="empty-icon">📂</div><h3>没有选择文件</h3><p>请点击左侧选择文件，或将文件拖拽至此区域</p></div>
+          <div v-if="previews.length === 0" class="empty-state"><div class="empty-icon">📂</div><h3>没有选择文件</h3><p>请点击左侧选择文件</p></div>
           <div v-else class="table-container">
             <div class="table-toolbar">
               <button class="btn btn-secondary" @click="refreshList">重新扫描</button>
@@ -386,7 +479,7 @@ onUnmounted(() => { OnFileDropOff(); });
           <div class="panel-content">
             <h2 class="section-title">全局转换设定</h2>
             <div class="input-stack">
-              <div class="input-field"><label>媒体类型</label><div class="segmented-control mini-segmented"><button :class="{ active: mediaSettings.mediaType === 'video' }" @click="mediaSettings.mediaType = 'video'" style="flex: 1;">🎬 视频处理</button><button :class="{ active: mediaSettings.mediaType === 'audio' }" @click="mediaSettings.mediaType = 'audio'" style="flex: 1;">🎵 音频提取</button></div></div>
+              <div class="input-field"><label>媒体类型</label><div class="segmented-control mini-segmented"><button :class="{ active: mediaSettings.mediaType === 'video' }" @click="mediaSettings.mediaType = 'video'" style="flex: 1;"> 视频处理</button><button :class="{ active: mediaSettings.mediaType === 'audio' }" @click="mediaSettings.mediaType = 'audio'" style="flex: 1;">音频提取</button></div></div>
               <div class="input-field"><label>目标格式</label><select v-model="mediaSettings.globalTargetFormat" class="native-select"><option v-for="fmt in currentFormatOptions" :key="fmt" :value="fmt">{{ fmt.toUpperCase() }}</option></select></div>
               <div v-if="mediaSettings.mediaType === 'video'" class="input-field mt-1"><label>编码加速引擎</label><select v-model="mediaSettings.hwAccel" class="native-select" style="font-weight: 500; color: #2563eb;"><option v-for="opt in hwAccelOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option></select></div>
               <div class="input-field mt-1"><label>输出质量参数</label><select v-model="mediaSettings.globalQuality" class="native-select"><option v-for="q in qualityOptions" :key="q.value" :value="q.value">{{ q.label }}</option></select></div>
@@ -399,14 +492,14 @@ onUnmounted(() => { OnFileDropOff(); });
             </div>
           </div>
           <div class="global-actions">
-            <button class="btn btn-primary w-full shadow-sm" :disabled="mediaTasks.length === 0" @click="startAllMediaTasks">▶️ 一键全部转换</button>
+            <button class="btn btn-primary w-full shadow-sm" :disabled="mediaTasks.length === 0" @click="startAllMediaTasks">一键全部转换</button>
             <div class="action-row mt-2">
               <button class="btn btn-secondary w-full" @click="handleSelectFiles">选择媒体文件</button>
             </div>
           </div>
         </aside>
         <main class="data-view" style="--wails-drop-target: drop">
-          <div v-if="mediaTasks.length === 0" class="empty-state"><div class="empty-icon">🎞️</div><h3>等待导入媒体</h3><p>拖拽视频或音频文件至此区域开始转换</p></div>
+          <div v-if="mediaTasks.length === 0" class="empty-state"><div class="empty-icon">🎞</div><h3>等待导入媒体</h3><p>选择视频或音频文件至此区域开始转换</p></div>
           <div v-else class="table-container">
             <div class="table-toolbar">
               <button class="btn btn-warning-soft" @click="clearErrorMediaTasks" v-if="hasErrorMediaTasks">清除失败任务</button>
@@ -434,52 +527,170 @@ onUnmounted(() => { OnFileDropOff(); });
     </main>
 
     <main v-show="activeApp === 'subtitle'" class="app-layout">
-      <header class="app-header"><div class="header-title"><h1>智能字幕剥离工厂</h1></div></header>
+      <header class="app-header">
+        <div class="header-title"><h1>智能字幕处理中心</h1></div>
+      </header>
       <div class="workspace">
         <aside class="control-sidebar">
           <div class="panel-content">
-            <h2 class="section-title">剥离设定</h2>
-            <div class="input-stack">
-              <div class="input-field"><label>输出格式</label><select disabled class="native-select" style="background: #e2e8f0; color: #64748b; font-weight: bold;"><option>通用 SRT 格式 (.srt)</option></select><p class="tiny-hint" style="margin-top: 4px;">将各种内置字幕统一剥离为纯文本 SRT，方便修改或压制。</p></div>
-              <div class="divider" style="margin: 16px 0;"></div>
-              <div class="input-field"><label>输出目录 (留空为原视频同级)</label><div style="display: flex; gap: 8px;"><input v-model="subSettings.outputDir" placeholder="如: C:\Subtitles" style="font-size: 12px; color: #64748b;" /></div></div>
+
+            <div class="input-field" style="margin-bottom: 20px;">
+              <label>处理模式</label>
+              <div class="segmented-control mini-segmented">
+                <button :class="{ active: currentSubMode === 'Extract' }" @click="currentSubMode = 'Extract'" style="flex: 1;">视频提取</button>
+                <button :class="{ active: currentSubMode === 'Convert' }" @click="currentSubMode = 'Convert'" style="flex: 1;">格式互转</button>
+              </div>
             </div>
+
+            <template v-if="currentSubMode === 'Extract'">
+              <h2 class="section-title">剥离设定</h2>
+              <div class="input-stack">
+                <div class="input-field"><label>输出格式</label>
+                  <select v-model="subSettings.format" class="native-select">
+                    <option value="srt">通用 SubRip 格式 (.srt)</option>
+                    <option value="ass">高级特效字幕 (.ass)</option>
+                    <option value="ssa">标准特效字幕 (.ssa)</option>
+                    <option value="vtt">网页 HTML5 格式 (.vtt)</option>
+                    <option value="ttml">广电/流媒体标准 (.ttml / .xml)</option>
+                    <option value="smi">微软 SAMI 格式 (.smi)</option>
+                  </select>
+                  <div class="divider" style="margin: 16px 0;"></div>
+                  <div class="input-field"><label>输出目录 (留空为原视频同级)</label><div style="display: flex; gap: 8px;"><input v-model="subSettings.outputDir" placeholder="如: C:\Subtitles" style="font-size: 12px; color: #64748b;" /></div></div>
+                </div>
+              </div>
+            </template>
+
+            <template v-if="currentSubMode === 'Convert'">
+              <h2 class="section-title">转换设定</h2>
+              <div class="input-stack">
+                <div class="input-field">
+                  <label>全局目标格式</label>
+                  <select v-model="subConvertSettings.globalTargetFormat" class="native-select">
+                    <option value="srt">通用 SRT 格式 (.srt)</option>
+                    <option value="ass">特效 ASS 格式 (.ass)</option>
+                    <option value="vtt">网页 VTT 格式 (.vtt)</option>
+                    <option value="ssa">标准特效字幕 (.ssa)</option>
+                    <option value="ttml">广电/流媒体标准 (.ttml)</option>
+                    <option value="smi">微软 SAMI 格式 (.smi)</option>
+                  </select>
+                </div>
+                <div class="divider" style="margin: 16px 0;"></div>
+                <div class="input-field">
+                  <label>输出目录</label>
+                  <div style="display: flex; gap: 8px;">
+                    <input v-model="subConvertSettings.outputDir" placeholder="(必填) 如不填请单独指定文件名" style="font-size: 12px; color: #64748b;" />
+                  </div>
+                  <p class="tiny-hint" style="margin-top:4px; color:#ef4444;"> 必须配置此项或指定新文件名。如果批量转换请指定输出目录。</p>
+                </div>
+              </div>
+            </template>
           </div>
+
           <div class="global-actions">
-            <button class="btn btn-primary w-full shadow-sm" :disabled="subTasks.length === 0" @click="extractAllTasks">📥 一键提取所有勾选</button>
-            <div class="action-row mt-2">
-              <button class="btn btn-secondary w-full" @click="handleSelectFiles">选择视频</button>
-            </div>
+            <template v-if="currentSubMode === 'Extract'">
+              <button class="btn btn-primary w-full shadow-sm" :disabled="subTasks.length === 0" @click="extractAllTasks">一键提取所有勾选</button>
+              <div class="action-row mt-2">
+                <button class="btn btn-secondary w-full" @click="handleSelectFiles">选择视频</button>
+              </div>
+            </template>
+            <template v-if="currentSubMode === 'Convert'">
+              <button class="btn btn-primary w-full shadow-sm" :disabled="subConvertTasks.length === 0" @click="runAllSubConvert">一键全部转换</button>
+              <div class="action-row mt-2">
+                <button class="btn btn-secondary w-full" @click="handleSelectFiles">选择字幕文件</button>
+              </div>
+            </template>
           </div>
         </aside>
+
         <main class="data-view" style="--wails-drop-target: drop">
-          <div v-if="subTasks.length === 0" class="empty-state"><div class="empty-icon">📝</div><h3>等待导入视频</h3><p>拖拽带字幕的 MKV/MP4 文件至此区域扫描</p></div>
-          <div v-else class="table-container">
-            <div class="table-toolbar">
-              <button class="btn btn-warning-soft" @click="clearErrorSubTasks" v-if="hasErrorSubTasks">清除无效任务</button>
-              <button class="btn btn-danger-soft" @click="clearSubTasks">清空列表</button>
+          <template v-if="currentSubMode === 'Extract'">
+            <div v-if="subTasks.length === 0" class="empty-state"><div class="empty-icon">📝</div><h3>等待导入视频</h3><p>选择带字幕流的 MKV/MP4等视频文件至此区域扫描</p></div>
+            <div v-else class="table-container">
+              <div class="table-toolbar">
+                <button class="btn btn-warning-soft" @click="clearErrorSubTasks" v-if="hasErrorSubTasks">清除无效任务</button>
+                <button class="btn btn-danger-soft" @click="clearSubTasks">清空列表</button>
+              </div>
+              <table class="native-table">
+                <thead><tr><th style="width: 30%;">视频文件</th><th style="width: 40%;">发现的字幕流 (勾选提取)</th><th style="width: 15%;">状态</th><th style="width: 15%; text-align: right; padding-right: 20px;">操作</th></tr></thead>
+                <tbody>
+                <tr v-for="(task, index) in subTasks" :key="task.id" :class="{'row-error': task.status === 'error' || task.status === 'no_sub'}">
+                  <td class="col-new-name"><span class="text-truncate font-medium" :title="task.name">{{ task.name }}</span></td>
+                  <td>
+                    <div v-if="task.status === 'scanning'" class="progress-display processing"><span class="pulsing-dot"></span> 深度扫描中...</div>
+                    <div v-else-if="task.status === 'no_sub'" style="color: #94a3b8; font-size: 12px;">未探测到内封字幕</div>
+                    <div v-else-if="task.status === 'error'" style="color: #ef4444; font-size: 12px;">探测失败</div>
+                    <div v-else class="chips-group">
+                      <label v-for="stream in task.streams" :key="stream.Index"
+                             class="chip"
+                             :class="{
+                               'active': task.selectedStreams.includes(stream.Index),
+                               'chip-warn': stream.Codec.toLowerCase() === 'microdvd' || stream.Codec.toLowerCase() === 'dvd_subtitle'
+                             }"
+                             :title="(stream.Codec.toLowerCase() === 'microdvd' || stream.Codec.toLowerCase() === 'dvd_subtitle') ? '该类型需使用更专业工具来进行转换，不建议使用本软件' : ''">
+                        <input type="checkbox" :value="stream.Index" v-model="task.selectedStreams" style="display: none;" />
+                        <span style="margin-right: 4px; font-weight: bold; opacity: 0.5;">#{{ stream.Index }}</span>
+                        {{ stream.Language.toUpperCase() }} ({{ stream.Codec }})
+                        <span v-if="stream.Codec.toLowerCase() === 'microdvd' || stream.Codec.toLowerCase() === 'dvd_subtitle'"> ⚠️</span>
+                      </label>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="progress-display" :class="task.status">
+                      <span class="progress-text" :title="task.progressText">{{ task.progressText }}</span>
+                    </div>
+                  </td>
+                  <td class="col-actions"><button v-if="task.status === 'ready'" class="btn-action primary" @click="extractSubtitles(task)" :disabled="task.selectedStreams.length === 0">提取</button><button class="btn-action danger" @click="removeSubTask(index)">移除</button></td>
+                </tr>
+                </tbody>
+              </table>
             </div>
-            <table class="native-table">
-              <thead><tr><th style="width: 30%;">视频文件</th><th style="width: 40%;">发现的字幕流 (勾选提取)</th><th style="width: 15%;">状态</th><th style="width: 15%; text-align: right; padding-right: 20px;">操作</th></tr></thead>
-              <tbody>
-              <tr v-for="(task, index) in subTasks" :key="task.id" :class="{'row-error': task.status === 'error' || task.status === 'no_sub'}">
-                <td class="col-new-name"><span class="text-truncate font-medium" :title="task.name">{{ task.name }}</span></td>
-                <td>
-                  <div v-if="task.status === 'scanning'" class="progress-display processing"><span class="pulsing-dot"></span> 深度扫描中...</div>
-                  <div v-else-if="task.status === 'no_sub'" style="color: #94a3b8; font-size: 12px;">未探测到内封字幕</div>
-                  <div v-else-if="task.status === 'error'" style="color: #ef4444; font-size: 12px;">探测被拦截</div>
-                  <div v-else class="chips-group"><label v-for="stream in task.streams" :key="stream.Index" class="chip" :class="{ 'active': task.selectedStreams.includes(stream.Index) }"><input type="checkbox" :value="stream.Index" v-model="task.selectedStreams" style="display: none;" /><span style="margin-right: 4px; font-weight: bold; opacity: 0.5;">#{{ stream.Index }}</span> {{ stream.Language.toUpperCase() }} ({{ stream.Codec }})</label></div>
-                </td>
-                <td>
-                  <div class="progress-display" :class="task.status">
-                    <span class="progress-text" :title="task.progressText">{{ task.progressText }}</span>
-                  </div>
-                </td>
-                <td class="col-actions"><button v-if="task.status === 'ready'" class="btn-action primary" @click="extractSubtitles(task)" :disabled="task.selectedStreams.length === 0">提取</button><button class="btn-action danger" @click="removeSubTask(index)">移除</button></td>
-              </tr>
-              </tbody>
-            </table>
-          </div>
+          </template>
+
+          <template v-if="currentSubMode === 'Convert'">
+            <div v-if="subConvertTasks.length === 0" class="empty-state">
+              <div class="empty-icon">🔄</div><h3>等待导入字幕</h3><p>选择 .srt, .ass, .vtt 等文件至此区域</p>
+            </div>
+            <div v-else class="table-container">
+              <div class="table-toolbar">
+                <button class="btn btn-danger-soft" @click="clearSubConvertTasks">清空列表</button>
+              </div>
+              <table class="native-table">
+                <thead>
+                <tr>
+                  <th style="width: 25%;">原字幕文件</th>
+                  <th style="width: 20%;">新文件名(选填)</th>
+                  <th style="width: 15%;">目标格式</th>
+                  <th style="width: 25%;">状态</th>
+                  <th style="width: 15%; text-align: right; padding-right: 20px;">操作</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr v-for="(task, index) in subConvertTasks" :key="task.id" :class="{'row-error': task.status === 'error'}">
+                  <td class="col-old-name"><span class="text-truncate font-medium" :title="task.name">{{ task.name }}</span></td>
+                  <td>
+                    <input v-model="task.outputName" class="native-select mini" style="width:100%; box-sizing:border-box; text-align:left; font-weight:normal; color:#1e293b; background:#f8fafc;" placeholder="不填则保持原名" :disabled="task.status === 'processing'" />
+                  </td>
+                  <td>
+                    <select v-model="task.targetFormat" class="native-select mini" :disabled="task.status === 'processing'">
+                      <option v-for="fmt in supportedSubFormats" :key="fmt" :value="fmt">{{ fmt.toUpperCase() }}</option>
+                    </select>
+                  </td>
+                  <td>
+                    <div class="progress-display" :class="task.status">
+                      <span v-if="task.status === 'processing'" class="pulsing-dot"></span>
+                      <span class="progress-text" :title="task.progressText">{{ task.progressText }}</span>
+                    </div>
+                  </td>
+                  <td class="col-actions">
+                    <button v-if="task.status !== 'success' && task.status !== 'processing'" class="btn-action primary" @click="runSubConvert(task)">转换</button>
+                    <button class="btn-action danger" @click="removeSubConvertTask(index)">移除</button>
+                  </td>
+                </tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+
         </main>
       </div>
     </main>
@@ -593,6 +804,34 @@ input:focus { background: #ffffff; border-color: #3b82f6; box-shadow: 0 0 0 3px 
 .btn-action.primary { color: #2563eb; } .btn-action.primary:hover { background: #eff6ff; }
 .btn-action.success { color: #059669; } .btn-action.success:hover { background: #ecfdf5; }
 .btn-action.danger { color: #ef4444; } .btn-action.danger:hover { background: #fef2f2; }
+.btn-icon { background: transparent !important; border: none !important; box-shadow: none !important; outline: none !important; cursor: pointer; padding: 4px; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: #ef4444; }
+.btn-icon:hover { background: #fee2e2 !important; }
+
+/* 现代化的虚线添加按钮 */
+.btn-dashed {
+  background: #ffffff;
+  border: 1.5px dashed #cbd5e1;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+.btn-dashed:hover {
+  border-color: #3b82f6;
+  color: #2563eb;
+  background: #eff6ff;
+  transform: translateY(-1px);
+}
+.btn-dashed:active {
+  transform: translateY(0);
+}
 
 /* 滚动条美化 */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -610,6 +849,12 @@ input:focus { background: #ffffff; border-color: #3b82f6; box-shadow: 0 0 0 3px 
 .chip { font-size: 11px; padding: 4px 10px; border-radius: 12px; background: #f1f5f9; color: #475569; border: 1px solid transparent; cursor: pointer; transition: all 0.15s; user-select: none; }
 .chip:hover { background: #e2e8f0; }
 .chip.active { background: #eff6ff; color: #2563eb; border-color: #bfdbfe; font-weight: 600; }
+
+/* 预警配色 */
+.chip.chip-warn { background: #fffbeb; color: #d97706; border-color: #fde68a; }
+.chip.chip-warn:hover { background: #fef3c7; }
+.chip.chip-warn.active { background: #f59e0b; color: #ffffff; border-color: #d97706; }
+
 .status-badge { display: inline-flex; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; white-space: nowrap; }
 .status-badge.neutral { background: #f1f5f9; color: #64748b; }
 .status-badge.success { background: #dcfce7; color: #15803d; }
@@ -653,6 +898,22 @@ input:focus { background: #ffffff; border-color: #3b82f6; box-shadow: 0 0 0 3px 
 .modal-footer { background: #f8fafc; padding: 16px 24px; display: flex; justify-content: flex-end; gap: 12px; border-top: 1px solid #e2e8f0; }
 .btn.danger-btn { background: #ef4444; color: white; border-color: #ef4444; }
 .btn.danger-btn:hover { background: #dc2626; }
-.modal-fade-enter-active, .modal-fade-leave-active { transition: all 0.2s ease; }
-.modal-fade-enter-from, .modal-fade-leave-to { opacity: 0; transform: scale(0.95); }
+
+.rules-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+.rule-card { background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; position: relative; box-shadow: 0 1px 2px rgba(0,0,0,0.02); }
+.rule-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.rule-num {
+  font-size: 12px;
+  font-weight: 700;
+  color: #3b82f6;
+  background: #eff6ff;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid #bfdbfe;
+}
+.rule-inputs { display: flex; flex-direction: row !important; flex-wrap: nowrap !important; gap: 8px; width: 100%; }
+.code-input { font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; margin: 0; }
+.var-name { flex: 1 !important; width: auto !important; min-width: 0; color: #059669; }
+.pattern { flex: 2 !important; width: auto !important; min-width: 0; color: #2563eb; }
 </style>
+
