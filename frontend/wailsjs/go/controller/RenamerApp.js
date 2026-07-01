@@ -14,10 +14,6 @@ export function QuickRename(arg1, arg2) {
   return window['go']['controller']['RenamerApp']['QuickRename'](arg1, arg2);
 }
 
-export function Run(arg1) {
-  return window['go']['controller']['RenamerApp']['Run'](arg1);
-}
-
 export function SelectFiles() {
   return window['go']['controller']['RenamerApp']['SelectFiles']();
 }

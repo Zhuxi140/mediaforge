@@ -18,8 +18,24 @@ export function ExtractSubtitle(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['controller']['MediaApp']['ExtractSubtitle'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function GetMediaInfo(arg1) {
+  return window['go']['controller']['MediaApp']['GetMediaInfo'](arg1);
+}
+
+export function LoadSettings() {
+  return window['go']['controller']['MediaApp']['LoadSettings']();
+}
+
+export function SaveSettings(arg1) {
+  return window['go']['controller']['MediaApp']['SaveSettings'](arg1);
+}
+
 export function ScanSubtitles(arg1) {
   return window['go']['controller']['MediaApp']['ScanSubtitles'](arg1);
+}
+
+export function SelectMediaFile() {
+  return window['go']['controller']['MediaApp']['SelectMediaFile']();
 }
 
 export function Startup(arg1) {

@@ -20,10 +20,6 @@ func (a *RenamerApp) Startup(ctx context.Context) {
 	a.ctx = ctx
 }
 
-func (a *RenamerApp) Run(ctx context.Context) {
-	a.ctx = ctx
-}
-
 // SelectFiles 选择文件
 func (a *RenamerApp) SelectFiles() []string {
 	selection, err := runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
@@ -38,7 +34,7 @@ func (a *RenamerApp) SelectFiles() []string {
 	})
 
 	if err != nil {
-		fmt.Printf("选择文件时出错", err)
+		fmt.Printf("选择文件时出错: %v", err)
 		return nil
 	}
 
@@ -52,7 +48,7 @@ func (a *RenamerApp) PreviewRename(Paths []string, rule renamer.RenameRule) []re
 	previews, err := renamer.GeneratePreview(Paths, rule)
 
 	if err != nil {
-		fmt.Printf("生成预览时出错", err)
+		fmt.Printf("生成预览时出错: %v", err)
 		return nil
 	}
 	return previews

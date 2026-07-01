@@ -9,5 +9,12 @@
   "author": {
     "name": "ZhuXi",
     "email": "xiaofei6626@126.com"
+  },
+  "info": {
+    "productVersion": "1.0.0",
+    "productName": "MediaForge",
+    "version": "1.0.0",
+    "description": "桌面工具集：批量文件重命名、FFmpeg 影音转换、字幕提取与格式互转",
+    "copyright": "Copyright © 2026 ZhuXi"
   }
 }

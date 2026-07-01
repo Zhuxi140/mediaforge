@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -13,6 +14,11 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
+
+// 最大并发转码任务数
+const maxConcurrentTasks = 3
+
+var taskSem = make(chan struct{}, maxConcurrentTasks)
 
 // 存储当前正在处理的任务
 var activeTasks sync.Map
@@ -74,9 +80,9 @@ func audioDeal(task FFmpegTask, lowerFormat string) []string {
 	var args []string
 
 	args = append(args, "-vn")
-	if lowerFormat == "mp3" {
+	switch lowerFormat {
+	case "mp3":
 		args = append(args, "-c:a", "libmp3lame")
-		//音质控制 (VBR 动态码率，0最好，9最差)
 		switch task.Quality {
 		case High:
 			args = append(args, "-q:a", "0")
@@ -87,7 +93,22 @@ func audioDeal(task FFmpegTask, lowerFormat string) []string {
 		case custom:
 			args = append(args, "-q:a", task.AudioVBR)
 		}
-
+	case "aac":
+		args = append(args, "-c:a", "aac")
+		switch task.Quality {
+		case High:
+			args = append(args, "-b:a", "320k")
+		case Medium:
+			args = append(args, "-b:a", "192k")
+		case Low:
+			args = append(args, "-b:a", "128k")
+		case custom:
+			args = append(args, "-b:a", task.AudioVBR+"k")
+		}
+	case "flac":
+		args = append(args, "-c:a", "flac")
+	case "wav":
+		args = append(args, "-c:a", "pcm_s16le")
 	}
 
 	return args
@@ -110,7 +131,7 @@ func RunConvert(ctx context.Context, task FFmpegTask) error {
 	} else if IsAudioFile(lowerFormat) {
 		args = append(args, audioDeal(task, lowerFormat)...)
 	} else if lowerFormat == "gif" {
-		args = append(args, "-vf", "fps=15,scale=480:-1:flags=lanczos")
+		args = append(args, "-vf", "fps=10,scale=480:-1:flags=lanczos", "-loop", "0")
 	} else {
 		return fmt.Errorf("暂不支持的格式： %s", lowerFormat)
 	}
@@ -130,8 +151,20 @@ func RunConvert(ctx context.Context, task FFmpegTask) error {
 		return fmt.Errorf("无法启动命令：%v", err)
 	}
 
+	// 取消时关闭 stderr 以解除 scanner 阻塞
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			cmd.Process.Kill()
+			stderr.Close()
+		case <-done:
+		}
+	}()
+
 	// 监听进度
 	lastOutPut := MonitorProgress(stderr, ctx, task)
+	close(done)
 
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("命令执行失败：%v \n 最后输出为: %s \n 执行命令为: %s", err, lastOutPut, cmd.Args)
@@ -199,10 +232,22 @@ func ProcessMediaAsync(task FFmpegTask, crx context.Context) error {
 
 	task.OutputPath = finalOutPutPath
 
+	// 确保输出目录存在
+	outDir := filepath.Dir(finalOutPutPath)
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		return fmt.Errorf("无法创建输出目录: %v", err)
+	}
+
 	ctx, cancel := context.WithCancel(crx)
 	activeTasks.Store(task.ID, cancel)
 
 	go func() {
+		// 获取并发令牌，达到上限时阻塞等待
+		taskSem <- struct{}{}
+
+		defer func() {
+			<-taskSem // 释放令牌
+		}()
 
 		// 任务结束后删除任务
 		defer activeTasks.Delete(task.ID)
@@ -213,7 +258,7 @@ func ProcessMediaAsync(task FFmpegTask, crx context.Context) error {
 			if ctx.Err() == context.Canceled {
 				runtime.EventsEmit(crx, "ffmpeg-error-"+task.ID, "任务已取消")
 			} else {
-				fmt.Printf("任务执行失败：%v", err)
+				runtime.LogError(crx, fmt.Sprintf("任务执行失败: %v", err))
 				runtime.EventsEmit(crx, "ffmpeg-error-"+task.ID, err.Error())
 			}
 		}

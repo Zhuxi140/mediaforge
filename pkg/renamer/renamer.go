@@ -153,6 +153,13 @@ func ExecuteRename(previews []RenamePreview) error {
 			return fmt.Errorf("文件%s格式错误: %s", p.OriginalName, p.FormatError)
 		}
 
+		// 检测跨驱动器移动（Windows 上 os.Rename 不支持跨卷）
+		oldVol := filepath.VolumeName(p.OriginalPath)
+		newVol := filepath.VolumeName(p.NewPath)
+		if oldVol != newVol {
+			return fmt.Errorf("不支持跨驱动器移动: %s → %s", p.OriginalPath, p.NewPath)
+		}
+
 		err := os.Rename(p.OriginalPath, p.NewPath)
 		if err != nil {
 			return fmt.Errorf("重命名文件%s时出错: %v", p.OriginalName, err)

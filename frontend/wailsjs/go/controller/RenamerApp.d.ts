@@ -9,8 +9,6 @@ export function PreviewRename(arg1:Array<string>,arg2:renamer.RenameRule):Promis
 
 export function QuickRename(arg1:string,arg2:string):Promise<string>;
 
-export function Run(arg1:context.Context):Promise<void>;
-
 export function SelectFiles():Promise<Array<string>>;
 
 export function Startup(arg1:context.Context):Promise<void>;

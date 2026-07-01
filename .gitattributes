@@ -1,0 +1,6 @@
+# FFmpeg binaries — use Git LFS if available, otherwise treat as binary
+pkg/media/bin/ffmpeg.exe binary
+pkg/media/bin/ffprobe.exe binary
+
+# Build output
+build/bin/ binary

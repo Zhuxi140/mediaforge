@@ -1,0 +1,14 @@
+linters:
+  enable:
+    - gofmt
+    - govet
+    - errcheck
+    - staticcheck
+    - unused
+    - printf
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck

@@ -1,19 +1,27 @@
-# README
+# MediaForge
 
-## About
+基于 Wails v2 的桌面工具集：批量文件重命名、FFmpeg 影音转换、字幕提取与格式互转。
 
-This is the official Wails Vue-TS template.
+## 开发
 
-You can configure the project by editing `wails.json`. More information about the project settings can be found
-here: https://wails.io/docs/reference/project-config
+```bash
+wails dev          # 热重载开发
+```
 
-## Live Development
+前端单独开发（`frontend/` 目录下）：
+```bash
+npm run dev        # Vite 开发服务器
+npm run build      # 类型检查 + 生产构建
+```
 
-To run in live development mode, run `wails dev` in the project directory. This will run a Vite development
-server that will provide very fast hot reload of your frontend changes. If you want to develop in a browser
-and have access to your Go methods, there is also a dev server that runs on http://localhost:34115. Connect
-to this in your browser, and you can call your Go code from devtools.
+## 构建
 
-## Building
+```bash
+wails build        # → build/bin/mediaforge.exe
+```
 
-To build a redistributable, production mode package, use `wails build`.
+FFmpeg 引擎通过 `//go:embed bin/*` 内嵌，首次运行自动释放到 `%APPDATA%/MediaForge/engine/`。
+
+## 架构
+
+详见 `CLAUDE.md` 和 `AGENTS.md`。

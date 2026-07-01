@@ -2,9 +2,12 @@ package controller
 
 import (
 	"context"
+	"mediaforge/pkg/config"
 	"mediaforge/pkg/media"
 	"path/filepath"
 	"strings"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 type MediaApp struct {
@@ -58,5 +61,44 @@ func (a *MediaApp) CheckInputFile(filePath string) string {
 }
 
 func (a *MediaApp) ConvertSubtitle(inputPath, outDir, outPutName, targetFormat string) error {
-	return media.ConvertSubtitle(inputPath, outDir, targetFormat, outPutName)
+	return media.ConvertSubtitle(inputPath, outDir, outPutName, targetFormat)
+}
+
+// SelectMediaFile 选择单个媒体文件
+func (a *MediaApp) SelectMediaFile() string {
+	selection, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "请选择媒体文件",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "所有媒体文件", Pattern: "*.mp4;*.mkv;*.avi;*.mov;*.wmv;*.flv;*.webm;*.mpeg;*.mpg;*.3gp;*.m2ts;*.mts;*.rmvb;*.mp3;*.wav;*.aac;*.flac;*.ogg;*.m4a;*.wma;*.gif"},
+			{DisplayName: "所有文件 (*.*)", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		return ""
+	}
+	return selection
+}
+
+// GetMediaInfo 获取媒体文件完整元数据
+func (a *MediaApp) GetMediaInfo(inputPath string) *media.MediaInfo {
+	info, err := media.GetMediaInfo(inputPath)
+	if err != nil {
+		runtime.LogError(a.ctx, "获取元数据失败: "+err.Error())
+		return nil
+	}
+	return info
+}
+
+// LoadSettings 加载用户配置
+func (a *MediaApp) LoadSettings() *config.Settings {
+	s, err := config.Load()
+	if err != nil {
+		return &config.Settings{}
+	}
+	return s
+}
+
+// SaveSettings 保存用户配置
+func (a *MediaApp) SaveSettings(s *config.Settings) error {
+	return s.Save()
 }

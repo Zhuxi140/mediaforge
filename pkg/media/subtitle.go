@@ -127,7 +127,19 @@ func ProcessSubtitleAsync(crx context.Context, id, inputPath, streamIndex, outDi
 		fmt.Printf("\n[字幕提取] ffmpeg %s\n", strings.Join(args, " "))
 		cmd := exec.CommandContext(ctx, localFFmpegPath, args...)
 
+		done := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				if cmd.Process != nil {
+					cmd.Process.Kill()
+				}
+			case <-done:
+			}
+		}()
+
 		out, err := cmd.CombinedOutput()
+		close(done)
 
 		if err != nil {
 			if ctx.Err() == context.Canceled {
@@ -143,7 +155,7 @@ func ProcessSubtitleAsync(crx context.Context, id, inputPath, streamIndex, outDi
 	return nil
 }
 
-func ConvertSubtitle(inputPath, outputDir, targetFormat, outPutName string) error {
+func ConvertSubtitle(inputPath, outputDir, outPutName, targetFormat string) error {
 	if localFFmpegPath == "" {
 		return fmt.Errorf("引擎未初始化")
 	}
@@ -151,7 +163,7 @@ func ConvertSubtitle(inputPath, outputDir, targetFormat, outPutName string) erro
 	ext := filepath.Ext(inputPath)
 
 	if !IsSubtitleFile(strings.TrimPrefix(ext, ".")) {
-		runtime.LogError(context.Background(), "该文件不是字幕文件或暂不支持该类型字幕")
+		return fmt.Errorf("该文件不是字幕文件或暂不支持该类型字幕: %s", ext)
 	}
 
 	base := filepath.Base(inputPath)

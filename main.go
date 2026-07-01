@@ -17,6 +17,7 @@ func main() {
 	// Create an instance of the app structure
 	renamerApp := controller.NewRenamerApp()
 	mediaApp := controller.NewMediaApp()
+	m3u8App := controller.NewM3U8App()
 
 	// Create application with options
 	err := wails.Run(&options.App{
@@ -33,10 +34,12 @@ func main() {
 		OnStartup: func(ctx context.Context) {
 			renamerApp.Startup(ctx)
 			mediaApp.Startup(ctx)
+			m3u8App.Startup(ctx)
 		},
 		Bind: []interface{}{
 			renamerApp,
 			mediaApp,
+			m3u8App,
 		},
 	})
 
